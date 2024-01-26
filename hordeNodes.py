@@ -21,6 +21,8 @@ import json
 import random
 import time
 from PIL import Image
+import base64
+import io
 
 DEFAULT_REQUEST = {
   "prompt": "string",
@@ -159,23 +161,31 @@ class HordeGeneralSettingsInvocation(BaseInvocation):
         input=Input.Direct,
         ui_order=0,
     )
+    steps: int = InputField(
+        description="The number of steps to use when generating the image.",
+        title="Steps",
+        default=30,
+        ge=1,
+        le=500,
+        ui_order=1,
+    )
     cfg_scale: float = InputField(
         description="The cfg_scale to use when generating the image.",
         title="CFG Scale",
         default=7.5,
-        ui_order=1,
+        ui_order=2,
     )
     seed: int = InputField(
         description="The seed to use when generating the image.",
         title="Seed",
         default=0,
-        ui_order=2,
+        ui_order=3,
     )
     seed_variation: int = InputField(
         description="Increment used if multiple images are requested.",
         title="Seed Variation",
         default=1,
-        ui_order=3,
+        ui_order=4,
     )
 
     def invoke(self, context: InvocationContext) -> HordeGeneralSettingsOutput:
@@ -184,6 +194,7 @@ class HordeGeneralSettingsInvocation(BaseInvocation):
             general_settings_output = HordeGeneralSettings(
                 settings={
                     "sampler_name": self.sampler,
+                    "steps": self.steps,
                     "cfg_scale": self.cfg_scale,
                     "seed": self.seed,
                     "seed_variation": self.seed_variation,
@@ -303,6 +314,59 @@ class HordeAdvancedSettingsInvocation(BaseInvocation):
         )
 
 
+class HordeImageSettings(BaseModel):
+    settings: dict = Field(description="Image Settings")
+    params: dict = Field(description="Image Params")
+    image: Optional[ImageField] = Field(default=None, description="Image") #custom output won't work with ImageField, and I'm tired of debugging why
+    mask: Optional[ImageField] = Field(default=None, description="Mask")
+@invocation_output("horde_image_settings_output")
+class HordeImageSettingsOutput(BaseInvocationOutput):
+    """The output of the HordeImageSettingsInvocation."""
+    image_settings_output: HordeImageSettings | None = OutputField(
+        title="Image Settings",
+        description="Image Settings",
+    )
+
+@invocation(
+    "horde_img2img_settings",
+    title="HORDE: Image to Image Settings",
+    category="horde",
+    tags=["horde", "settings"],
+    version="1.0.0"
+)
+class HordeImageSettingsInvocation(BaseInvocation):
+    """Inputs required for image to image generation."""
+    source_image: ImageField = InputField(
+        description="The source image to use when generating the image.",
+        title="Source Image",
+        ui_order=0,
+    )
+    denoising_strength: float = InputField(
+        description="The denoising strength to use when generating the image.",
+        title="Denoising Strength",
+        default=0.75,
+        ge=0.01,
+        le=1,
+        ui_order=1,
+    )
+
+    def invoke(self, context: InvocationContext) -> HordeImageSettingsOutput:
+        """Invoke the advanced settings node."""
+        collected_output = HordeImageSettings(
+            image = self.source_image,
+            mask = None,
+            settings = {
+                "source_processing": "img2img",
+                "source_image": self.source_image.image_name,
+            },
+            params = {
+                "denoising_strength": self.denoising_strength,
+            }
+        )
+        debug(collected_output)
+        return HordeImageSettingsOutput(
+            image_settings_output = collected_output
+        )
 
 @invocation_output("horde_images_output")
 class HordeImagesOutput(BaseInvocationOutput):
@@ -411,6 +475,13 @@ class HordeRequestImageInvocation(BaseInvocation):
         input=Input.Connection,
         ui_order=8,
     )
+    img_settings: Optional[HordeImageSettings] = InputField(
+        description="Input Image for controlling details of the generated image.",
+        default=None,
+        title="Input Image",
+        input=Input.Connection,
+        ui_order=9,
+    )
 
     timeout: int = InputField(
         description="Give up after waiting this many seconds.",
@@ -420,6 +491,42 @@ class HordeRequestImageInvocation(BaseInvocation):
         le=600,
         ui_order=20,
     )
+
+    def collect_response(self, context: InvocationContext, req_UUID, img_list, pil_list, imageField_list):
+        check_url = BASEURL + 'generate/check/' + req_UUID
+        status_url = BASEURL + 'generate/status/' + req_UUID
+        start_time = time.time()
+        
+        while True:
+            response = requests.get(check_url, headers=HEADERS).json()
+            info(response)
+            if response["done"]:
+                break
+            if time.time() - start_time >= self.timeout:
+                break
+            time.sleep(4)
+        
+        response = requests.get(status_url, headers = HEADERS).json()
+        generations = response["generations"]
+
+        for generation in generations:
+            # download the image as a PIL Image
+            img = Image.open(requests.get(generation["img"], stream=True).raw)
+            pil_list.append(img)
+            # save the image
+            image_dto = context.services.images.create(
+                image=img,
+                image_origin=ResourceOrigin.INTERNAL,
+                image_category=ImageCategory.GENERAL,
+                node_id=self.id,
+                is_intermediate=True,
+                session_id=context.graph_execution_state_id,
+                workflow=context.workflow,
+            )
+            img_list.append(image_dto)
+
+            for image in img_list:
+                imageField_list.append(ImageField(image_name=image.image_name))
 
 
     def invoke(self, context: InvocationContext) -> HordeImagesOutput:
@@ -440,47 +547,37 @@ class HordeRequestImageInvocation(BaseInvocation):
         if self.gen_settings is not None:
             req['params'].update(self.gen_settings.settings)
             req['params']['seed'] = str(self.gen_settings.settings['seed']) #force to string
+        
         if self.adv_settings is not None:
             req['params'].update(self.adv_settings.params)
             req.update(self.adv_settings.settings)
         
-        req_UUID = image_request(req)['id']
+        if self.img_settings is not None:
+            req['params'].update(self.img_settings.params)
+            req.update(self.img_settings.settings)
+            image = context.services.images.get_pil_image(self.img_settings.image.image_name)
+            if self.img_settings.mask is not None:
+                mask = context.services.images.get_pil_image(self.img_settings.mask.image_name)
+                mask = mask.convert("L")  # Convert mask to grayscale
+                image.putalpha(mask)  # Set mask as alpha channel of the image
 
-        check_url = BASEURL + 'generate/check/' + req_UUID
-        status_url = BASEURL + 'generate/status/' + req_UUID
-        while True:
-            response = requests.get(check_url, headers=HEADERS).json()
-            info(response)
-            if response["finished"] == req["params"]["n"]:
-                break
-            time.sleep(5)
+            # Save the image as WebP format
+            webp_data = io.BytesIO()
+            image.save(webp_data, format='WebP')
+            webp_data.seek(0)
+
+            # Encode the WebP data as base64
+            webp_base64 = base64.b64encode(webp_data.read()).decode('utf-8')
+            req['source_image'] = webp_base64
+
+                
         
-        response = requests.get(status_url, headers = HEADERS).json()
-        generations = response["generations"]
+        req_UUID = image_request(req)['id']
         img_list = []
         pil_list = []
-        for generation in generations:
-            # download the image as a PIL Image
-            img = Image.open(requests.get(generation["img"], stream=True).raw)
-            pil_list.append(img)
-            # save the image
-            image_dto = context.services.images.create(
-                image=img,
-                image_origin=ResourceOrigin.INTERNAL,
-                image_category=ImageCategory.GENERAL,
-                node_id=self.id,
-                is_intermediate=True,
-                session_id=context.graph_execution_state_id,
-                workflow=context.workflow,
-            )
-            img_list.append(image_dto)
+        imageField_list = []
+        self.collect_response(context, req_UUID, img_list, pil_list, imageField_list)
 
-            imageField_list = []
-            for image in img_list:
-                imageField_list.append(ImageField(image_name=image.image_name))
-
-
-        print(response)
         return HordeImagesOutput(
             single_image_output = ImageField(image_name=img_list[0].image_name),
             width = pil_list[0].width,
