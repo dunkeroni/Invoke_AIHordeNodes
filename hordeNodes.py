@@ -323,8 +323,8 @@ class HordeImageSettings(BaseModel):
 class HordeImageSettingsOutput(BaseInvocationOutput):
     """The output of the HordeImageSettingsInvocation."""
     image_settings_output: HordeImageSettings | None = OutputField(
-        title="Image Settings",
-        description="Image Settings",
+        title="Input Image",
+        description="Image provided for img2img, inpainting, controlnet, etc.",
     )
 
 @invocation(
@@ -352,21 +352,166 @@ class HordeImageSettingsInvocation(BaseInvocation):
 
     def invoke(self, context: InvocationContext) -> HordeImageSettingsOutput:
         """Invoke the advanced settings node."""
-        collected_output = HordeImageSettings(
-            image = self.source_image,
-            mask = None,
-            settings = {
-                "source_processing": "img2img",
-                "source_image": self.source_image.image_name,
-            },
-            params = {
-                "denoising_strength": self.denoising_strength,
-            }
-        )
-        debug(collected_output)
         return HordeImageSettingsOutput(
-            image_settings_output = collected_output
+            image_settings_output = HordeImageSettings(
+                image = self.source_image,
+                mask = None,
+                settings = {
+                    "source_processing": "img2img",
+                },
+                params = {
+                    "denoising_strength": self.denoising_strength,
+                }
+            )
         )
+
+@invocation(
+    "horde_inpaint_settings",
+    title="HORDE: Inpaint Settings",
+    category="horde",
+    tags=["horde", "settings"],
+    version="1.0.0"
+)
+class HordeInpaintSettingsInvocation(BaseInvocation):
+    """Inputs required for inpainting."""
+    source_image: ImageField = InputField(
+        description="The source image to use when generating the image.",
+        title="Source Image",
+        ui_order=0,
+    )
+    source_mask: ImageField = InputField(
+        description="The source mask to use when generating the image.",
+        title="Source Mask",
+        ui_order=1,
+    )
+    denoising_strength: float = InputField(
+        description="The denoising strength to use when generating the image.",
+        title="Denoising Strength",
+        default=0.75,
+        ge=0.01,
+        le=1,
+        ui_order=2,
+    )
+
+    def invoke(self, context: InvocationContext) -> HordeImageSettingsOutput:
+        """Invoke the advanced settings node."""
+        return HordeImageSettingsOutput(
+            image_settings_output = HordeImageSettings(
+                image = self.source_image,
+                mask = self.source_mask,
+                settings = {
+                    "source_processing": "inpainting",
+                },
+                params = {
+                    "denoising_strength": self.denoising_strength,
+                }
+            )
+        )
+
+
+@invocation(
+    "horde_outpaint_settings",
+    title="HORDE: Outpaint Settings",
+    category="horde",
+    tags=["horde", "settings"],
+    version="1.0.0"
+)
+class HordeOutpaintSettingsInvocation(BaseInvocation):
+    source_image: ImageField = InputField(
+        description="The source image to use when generating the image.",
+        title="Source Image",
+        ui_order=0,
+    )
+    denoising_strength: float = InputField(
+        description="The denoising strength to use when generating the image.",
+        title="Denoising Strength",
+        default=1,
+        ge=0.01,
+        le=1,
+        ui_order=1,
+    )
+    outpaint_right: int = InputField(
+        description="The number of pixels to outpaint to the right.",
+        title="Outpaint Right",
+        default=0,
+        ge=0,
+        multiple_of=64,
+        ui_order=2,
+    )
+    outpaint_left: int = InputField(
+        description="The number of pixels to outpaint to the left.",
+        title="Outpaint Left",
+        default=0,
+        ge=0,
+        multiple_of=64,
+        ui_order=3,
+    )
+    outpaint_top: int = InputField(
+        description="The number of pixels to outpaint to the top.",
+        title="Outpaint Top",
+        default=0,
+        ge=0,
+        multiple_of=64,
+        ui_order=4,
+    )
+    outpaint_bottom: int = InputField(
+        description="The number of pixels to outpaint to the bottom.",
+        title="Outpaint Bottom",
+        default=0,
+        ge=0,
+        multiple_of=64,
+        ui_order=5,
+    )
+
+    def invoke(self, context: InvocationContext) -> HordeImageSettingsOutput:
+        """Invoke the advanced settings node."""
+        image = context.services.images.get_pil_image(self.source_image.image_name)
+        width, height = image.size
+        # Extend the image
+        extended_width = width + self.outpaint_left + self.outpaint_right
+        extended_height = height + self.outpaint_top + self.outpaint_bottom
+        extended_image = Image.new("RGBA", (extended_width, extended_height))
+        extended_image.paste(image, (self.outpaint_left, self.outpaint_top))
+        
+        # Create the mask image
+        mask = Image.new("L", (extended_width, extended_height), color=0)
+        mask.paste(Image.new("L", (width, height), color=255), (self.outpaint_left, self.outpaint_top))
+        mask.convert("RGBA") # Convert mask to RGBA for Invoke saving to work
+
+        #save both images
+        image_dto = context.services.images.create(
+            image=extended_image,
+            image_origin=ResourceOrigin.INTERNAL,
+            image_category=ImageCategory.GENERAL,
+            node_id=self.id,
+            is_intermediate=True,
+            session_id=context.graph_execution_state_id,
+            workflow=context.workflow,
+        )
+        mask_dto = context.services.images.create(
+            image=mask,
+            image_origin=ResourceOrigin.INTERNAL,
+            image_category=ImageCategory.GENERAL,
+            node_id=self.id,
+            is_intermediate=True,
+            session_id=context.graph_execution_state_id,
+            workflow=context.workflow,
+        )
+
+        return HordeImageSettingsOutput(
+            image_settings_output = HordeImageSettings(
+                image = ImageField(image_name=image_dto.image_name),
+                mask = ImageField(image_name=mask_dto.image_name),
+                settings = {
+                    "source_processing": "inpainting", #because outpainting breaks the server
+                },
+                params = {
+                    "denoising_strength": self.denoising_strength,
+                }
+            )
+        )
+
+
 
 @invocation_output("horde_images_output")
 class HordeImagesOutput(BaseInvocationOutput):
@@ -387,6 +532,7 @@ class HordeImagesOutput(BaseInvocationOutput):
         title="All Images",
         description="If n>1, a list of all images returned from the horde. Use the Iterate node to loop through them.",
     )
+
 
 """
 Design structure:
@@ -504,6 +650,11 @@ class HordeRequestImageInvocation(BaseInvocation):
                 break
             if time.time() - start_time >= self.timeout:
                 break
+            # if workflowcanceled:
+            #     info("Workflow stopped. Canceling image request.")
+            #     response = requests.delete(status_url, headers=HEADERS)
+            #     info(response.json())
+            #     return None
             time.sleep(4)
         
         response = requests.get(status_url, headers = HEADERS).json()
@@ -559,6 +710,7 @@ class HordeRequestImageInvocation(BaseInvocation):
             if self.img_settings.mask is not None:
                 mask = context.services.images.get_pil_image(self.img_settings.mask.image_name)
                 mask = mask.convert("L")  # Convert mask to grayscale
+                mask = mask.resize(image.size)  # Resize the mask to match the image size
                 image.putalpha(mask)  # Set mask as alpha channel of the image
 
             # Save the image as WebP format
