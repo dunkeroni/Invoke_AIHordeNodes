@@ -5,11 +5,17 @@ from invokeai.backend.util.logging import info, debug, warning, error
 # Load the local userconfig.cfg file
 import configparser
 import os
+import shutil
 
 config = configparser.ConfigParser()
 #get path to the local folder
 path = os.path.dirname(os.path.realpath(__file__))
 #join the path to the config file
+
+# Check if userconfig.cfg exists, if not, create it as a copy of userconfig.TEMPLATE.cfg
+if not os.path.exists(os.path.join(path, 'userconfig.cfg')):
+    shutil.copy(os.path.join(path, 'userconfig.TEMPLATE.cfg'), os.path.join(path, 'userconfig.cfg'))
+
 config.read(os.path.join(path, 'userconfig.cfg'))
 APIKEY = config.get('settings', 'apikey')
 PREFERRED_WORKERS = config.get('settings', 'preferred_workers')
