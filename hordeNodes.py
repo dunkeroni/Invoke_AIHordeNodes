@@ -512,6 +512,58 @@ class HordeOutpaintSettingsInvocation(BaseInvocation):
         )
 
 
+#[ canny, hed, depth, normal, openpose, seg, scribble, fakescribbles, hough ]
+CONTROL_NET_METHODS = Literal["canny", "hed", "depth", "normal", "openpose", "seg", "scribble", "fakescribbles", "hough"]
+
+@invocation(
+    "horde_controlnet_settings",
+    title="HORDE: ControlNet Settings",
+    category="horde",
+    tags=["horde", "settings"],
+    version="1.0.0"
+)
+class HordeControlNetSettingsInvocation(BaseInvocation):
+    """Inputs required for controlnet."""
+    source_image: ImageField = InputField(
+        description="The source image to use when generating the image.",
+        title="Source Image",
+        ui_order=0,
+    )
+    control_type: CONTROL_NET_METHODS = InputField(
+        description="The type of control to use when generating the image.",
+        title="Control Type",
+        default="canny",
+        input=Input.Direct,
+        ui_order=1,
+    )
+    image_is_control: bool = InputField(
+        description="Set to True if the source image is already a processed control image.",
+        title="Pre-Processed Control Image",
+        default=False,
+        ui_order=2,
+    )
+    return_control_map: bool = InputField(
+        description="Set to True to return the processed control map.",
+        title="Return Control Map",
+        default=False,
+        ui_order=3,
+    )
+
+    def invoke(self, context: InvocationContext) -> HordeImageSettingsOutput:
+        """Invoke the advanced settings node."""
+        return HordeImageSettingsOutput(
+            image_settings_output = HordeImageSettings(
+                image = self.source_image,
+                mask = None,
+                settings = {},
+                params = {
+                    "control_type": self.control_type,
+                    "image_is_control": self.image_is_control,
+                    "return_control_map": self.return_control_map,
+                }
+            )
+        )
+
 
 @invocation_output("horde_images_output")
 class HordeImagesOutput(BaseInvocationOutput):
