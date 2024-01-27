@@ -14,12 +14,11 @@ path = os.path.dirname(os.path.realpath(__file__))
 
 # Check if userconfig.cfg exists, if not, create it as a copy of userconfig.TEMPLATE.cfg
 if not os.path.exists(os.path.join(path, 'userconfig.cfg')):
+    info('Creating userconfig.cfg from template.')
     shutil.copy(os.path.join(path, 'userconfig.TEMPLATE.cfg'), os.path.join(path, 'userconfig.cfg'))
 
 config.read(os.path.join(path, 'userconfig.cfg'))
 APIKEY = config.get('settings', 'apikey')
-PREFERRED_WORKERS = config.get('settings', 'preferred_workers')
-BLACKLISTED_WORKERS = config.get('settings', 'blacklisted_workers')
 MINIMUM_WORKERS = config.getint('settings', 'minimum_workers')
 
 
