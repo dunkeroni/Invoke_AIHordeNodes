@@ -2,6 +2,8 @@
 Nodes to interface Invoke workflows with the AI Horde  
 ![image](https://github.com/dunkeroni/Invoke_AIHordeNodes/assets/3298737/e5d14f1b-ac0c-4675-8a91-cf430488b598)
 
+## NOTE: This repository has been updated to work with the latest version of Invoke (4.0.0rc5). It is not backwards compatible with 3.7 or earlier versions.
+
 ## Usage:  
 git clone this repository into your invokeAI/nodes/ folder.  
 Create a copy of the `userconfig.TEMPLATE.cfg` file and name it `userconfig.cfg` and provide your API Key in it. If you do not do this step, then it will be done for you when you launch Invoke and the apikey will be set to anonymous.  

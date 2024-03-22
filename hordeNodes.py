@@ -1,9 +1,9 @@
 import requests
 from .persistent import APIKEY, BASEURL, CLIENT_AGENT, MODEL_LIST
-from invokeai.backend.util.logging import info, debug, warning, error
+from invokeai.backend.util.logging import info, warning, error
 
-from typing import Literal, TypedDict, Union, Optional
-from invokeai.app.invocations.baseinvocation import (
+from typing import Literal, Optional
+from invokeai.invocation_api import (
     BaseInvocationOutput,
     BaseInvocation,
     Input,
@@ -13,11 +13,9 @@ from invokeai.app.invocations.baseinvocation import (
     OutputField,
     invocation,
     invocation_output,
+    ImageField,
 )
-from invokeai.app.invocations.primitives import StringOutput, ImageField
-from invokeai.app.services.image_records.image_records_common import ImageCategory, ImageRecordChanges, ResourceOrigin
 from pydantic import BaseModel, Field
-import json
 import random
 import time
 from PIL import Image
@@ -465,7 +463,7 @@ class HordeOutpaintSettingsInvocation(BaseInvocation):
 
     def invoke(self, context: InvocationContext) -> HordeImageSettingsOutput:
         """Invoke the advanced settings node."""
-        image = context.services.images.get_pil_image(self.source_image.image_name)
+        image = context.images.get_pil(self.source_image.image_name)
         width, height = image.size
         # Extend the image
         extended_width = width + self.outpaint_left + self.outpaint_right
@@ -479,24 +477,8 @@ class HordeOutpaintSettingsInvocation(BaseInvocation):
         mask.convert("RGBA") # Convert mask to RGBA for Invoke saving to work
 
         #save both images
-        image_dto = context.services.images.create(
-            image=extended_image,
-            image_origin=ResourceOrigin.INTERNAL,
-            image_category=ImageCategory.GENERAL,
-            node_id=self.id,
-            is_intermediate=True,
-            session_id=context.graph_execution_state_id,
-            workflow=context.workflow,
-        )
-        mask_dto = context.services.images.create(
-            image=mask,
-            image_origin=ResourceOrigin.INTERNAL,
-            image_category=ImageCategory.GENERAL,
-            node_id=self.id,
-            is_intermediate=True,
-            session_id=context.graph_execution_state_id,
-            workflow=context.workflow,
-        )
+        image_dto = context.images.save(image=extended_image)
+        mask_dto = context.images.save(image=mask)
 
         return HordeImageSettingsOutput(
             image_settings_output = HordeImageSettings(
@@ -690,14 +672,13 @@ class HordeRequestImageInvocation(BaseInvocation):
         ui_order=20,
     )
 
-    def collect_response(self, context: InvocationContext, req_UUID, img_list, pil_list, imageField_list):
+    def collect_response(self, context: InvocationContext, req_UUID, img_list: list, pil_list: list, imageField_list: list):
         check_url = BASEURL + 'generate/check/' + req_UUID
         status_url = BASEURL + 'generate/status/' + req_UUID
         start_time = time.time()
         
         while True:
             response = requests.get(check_url, headers=HEADERS).json()
-            info(response)
             if response["done"]:
                 break
             if time.time() - start_time >= self.timeout:
@@ -717,15 +698,7 @@ class HordeRequestImageInvocation(BaseInvocation):
             img = Image.open(requests.get(generation["img"], stream=True).raw)
             pil_list.append(img)
             # save the image
-            image_dto = context.services.images.create(
-                image=img,
-                image_origin=ResourceOrigin.INTERNAL,
-                image_category=ImageCategory.GENERAL,
-                node_id=self.id,
-                is_intermediate=True,
-                session_id=context.graph_execution_state_id,
-                workflow=context.workflow,
-            )
+            image_dto = context.images.save(image=img)
             img_list.append(image_dto)
 
             for image in img_list:
@@ -758,9 +731,9 @@ class HordeRequestImageInvocation(BaseInvocation):
         if self.img_settings is not None:
             req['params'].update(self.img_settings.params)
             req.update(self.img_settings.settings)
-            image = context.services.images.get_pil_image(self.img_settings.image.image_name)
+            image = context.images.get_pil(self.img_settings.image.image_name)
             if self.img_settings.mask is not None:
-                mask = context.services.images.get_pil_image(self.img_settings.mask.image_name)
+                mask = context.images.get_pil(self.img_settings.mask.image_name)
                 mask = mask.convert("L")  # Convert mask to grayscale
                 mask = mask.resize(image.size)  # Resize the mask to match the image size
                 image.putalpha(mask)  # Set mask as alpha channel of the image
